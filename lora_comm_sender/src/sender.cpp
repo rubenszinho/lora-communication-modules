@@ -10,6 +10,7 @@
 //Libraries for Serialization
 #include <ArduinoJson.h>
 #include <cbor.h>
+#include "sensor_data.pb-c.h"
 
 //define the pins used by the LoRa transceiver module
 #define SCK 5
@@ -34,7 +35,7 @@
 // Protocol timing configuration (in seconds)
 #define JSON_DURATION_SEC 10        // 1 minute
 #define MESSAGEPACK_DURATION_SEC 10 // 2 minutes  
-#define CBOR_DURATION_SEC 180       // 3 minutes
+#define CBOR_DURATION_SEC 10       // 3 minutes
 #define PROTOBUF_DURATION_SEC 240   // 4 minutes
 
 // Send interval
@@ -254,7 +255,7 @@ void sendLoRaData() {
   readSensorData();
   
   // Allocate buffer for serialized data
-  const size_t BUFFER_SIZE = 8192; // 8KB buffer
+  const size_t BUFFER_SIZE = 2 * 8192; // 16KB buffer
   char* buffer = (char*)malloc(BUFFER_SIZE);
   if (!buffer) {
     Serial.println("Failed to allocate buffer");
@@ -310,15 +311,13 @@ void sendLoRaData() {
 size_t serializeJSON(char* buffer, size_t buffer_size) {
   JsonDocument doc;
   
-  // Create arrays for vectors - Sample first 10 elements to keep size manageable
+  // Create arrays for vectors - Use full array size
   JsonArray temp_array = doc["temperature"].to<JsonArray>();
   JsonArray precip_array = doc["precipitation"].to<JsonArray>();
   JsonArray soil_array = doc["soil_moisture"].to<JsonArray>();
   JsonArray wind_array = doc["wind"].to<JsonArray>();
   
-  const int SAMPLE_SIZE = 10; // Use smaller sample for LoRa transmission
-  
-  for (int i = 0; i < SAMPLE_SIZE; i++) {
+  for (int i = 0; i < ARRAY_SIZE; i++) {
     temp_array.add(sensor_data.temperature[i]);
     precip_array.add(sensor_data.precipitation[i]);
     soil_array.add(sensor_data.soil_moisture[i]);
@@ -334,7 +333,7 @@ size_t serializeJSON(char* buffer, size_t buffer_size) {
   doc["battery_level"] = sensor_data.battery_level;
   doc["sequence_number"] = sensor_data.sequence_number;
   doc["protocol"] = "JSON";
-  doc["array_sample_size"] = SAMPLE_SIZE;
+  doc["array_size"] = ARRAY_SIZE;
   
   // Serialize to buffer
   return serializeJson(doc, buffer, buffer_size);
@@ -343,15 +342,13 @@ size_t serializeJSON(char* buffer, size_t buffer_size) {
 size_t serializeMessagePack(char* buffer, size_t buffer_size) {
   JsonDocument doc;
   
-  // Create arrays for vectors - Sample first 10 elements to keep size manageable
+  // Create arrays for vectors - Use full array size
   JsonArray temp_array = doc["temperature"].to<JsonArray>();
   JsonArray precip_array = doc["precipitation"].to<JsonArray>();
   JsonArray soil_array = doc["soil_moisture"].to<JsonArray>();
   JsonArray wind_array = doc["wind"].to<JsonArray>();
   
-  const int SAMPLE_SIZE = 10; // Use smaller sample for LoRa transmission
-  
-  for (int i = 0; i < SAMPLE_SIZE; i++) {
+  for (int i = 0; i < ARRAY_SIZE; i++) {
     temp_array.add(sensor_data.temperature[i]);
     precip_array.add(sensor_data.precipitation[i]);
     soil_array.add(sensor_data.soil_moisture[i]);
@@ -367,7 +364,7 @@ size_t serializeMessagePack(char* buffer, size_t buffer_size) {
   doc["battery_level"] = sensor_data.battery_level;
   doc["sequence_number"] = sensor_data.sequence_number;
   doc["protocol"] = "MESSAGEPACK";
-  doc["array_sample_size"] = SAMPLE_SIZE;
+  doc["array_size"] = ARRAY_SIZE;
   
   // Serialize to MessagePack format
   return serializeMsgPack(doc, buffer, buffer_size);
@@ -377,98 +374,96 @@ size_t serializeCBOR(char* buffer, size_t buffer_size) {
   // Create root map
   cbor_item_t *root = cbor_new_definite_map(12);
   
-  const int SAMPLE_SIZE = 10;
-  
   // Add device_id
-  cbor_map_add(root, (struct cbor_pair) {
+  (void)cbor_map_add(root, (struct cbor_pair) {
     .key = cbor_move(cbor_build_string("device_id")),
     .value = cbor_move(cbor_build_string(sensor_data.device_id))
   });
   
   // Add sequence_number
-  cbor_map_add(root, (struct cbor_pair) {
+  (void)cbor_map_add(root, (struct cbor_pair) {
     .key = cbor_move(cbor_build_string("sequence_number")),
     .value = cbor_move(cbor_build_uint32(sensor_data.sequence_number))
   });
   
   // Add pressure
-  cbor_map_add(root, (struct cbor_pair) {
+  (void)cbor_map_add(root, (struct cbor_pair) {
     .key = cbor_move(cbor_build_string("pressure")),
     .value = cbor_move(cbor_build_float4(sensor_data.pressure))
   });
   
   // Add light_level
-  cbor_map_add(root, (struct cbor_pair) {
+  (void)cbor_map_add(root, (struct cbor_pair) {
     .key = cbor_move(cbor_build_string("light_level")),
     .value = cbor_move(cbor_build_uint32(sensor_data.light_level))
   });
   
   // Add timestamp
-  cbor_map_add(root, (struct cbor_pair) {
+  (void)cbor_map_add(root, (struct cbor_pair) {
     .key = cbor_move(cbor_build_string("timestamp")),
     .value = cbor_move(cbor_build_uint64(sensor_data.timestamp))
   });
   
   // Add protocol
-  cbor_map_add(root, (struct cbor_pair) {
+  (void)cbor_map_add(root, (struct cbor_pair) {
     .key = cbor_move(cbor_build_string("protocol")),
     .value = cbor_move(cbor_build_string("CBOR"))
   });
   
   // Add battery_level
-  cbor_map_add(root, (struct cbor_pair) {
+  (void)cbor_map_add(root, (struct cbor_pair) {
     .key = cbor_move(cbor_build_string("battery_level")),
     .value = cbor_move(cbor_build_uint32(sensor_data.battery_level))
   });
   
   // Add raining
-  cbor_map_add(root, (struct cbor_pair) {
+  (void)cbor_map_add(root, (struct cbor_pair) {
     .key = cbor_move(cbor_build_string("raining")),
     .value = cbor_move(cbor_build_bool(sensor_data.raining))
   });
   
-  // Add array_sample_size
-  cbor_map_add(root, (struct cbor_pair) {
-    .key = cbor_move(cbor_build_string("array_sample_size")),
-    .value = cbor_move(cbor_build_uint8(SAMPLE_SIZE))
+  // Add array_size
+  (void)cbor_map_add(root, (struct cbor_pair) {
+    .key = cbor_move(cbor_build_string("array_size")),
+    .value = cbor_move(cbor_build_uint16(ARRAY_SIZE))
   });
   
-  // Add temperature array
-  cbor_item_t *temp_array = cbor_new_definite_array(SAMPLE_SIZE);
-  for (int i = 0; i < SAMPLE_SIZE; i++) {
-    cbor_array_push(temp_array, cbor_move(cbor_build_float4(sensor_data.temperature[i])));
+  // Add temperature array - Full size
+  cbor_item_t *temp_array = cbor_new_definite_array(ARRAY_SIZE);
+  for (int i = 0; i < ARRAY_SIZE; i++) {
+    (void)cbor_array_push(temp_array, cbor_move(cbor_build_float4(sensor_data.temperature[i])));
   }
-  cbor_map_add(root, (struct cbor_pair) {
+  (void)cbor_map_add(root, (struct cbor_pair) {
     .key = cbor_move(cbor_build_string("temperature")),
     .value = cbor_move(temp_array)
   });
   
-  // Add precipitation array
-  cbor_item_t *precip_array = cbor_new_definite_array(SAMPLE_SIZE);
-  for (int i = 0; i < SAMPLE_SIZE; i++) {
-    cbor_array_push(precip_array, cbor_move(cbor_build_float4(sensor_data.precipitation[i])));
+  // Add precipitation array - Full size
+  cbor_item_t *precip_array = cbor_new_definite_array(ARRAY_SIZE);
+  for (int i = 0; i < ARRAY_SIZE; i++) {
+    (void)cbor_array_push(precip_array, cbor_move(cbor_build_float4(sensor_data.precipitation[i])));
   }
-  cbor_map_add(root, (struct cbor_pair) {
+  (void)cbor_map_add(root, (struct cbor_pair) {
     .key = cbor_move(cbor_build_string("precipitation")),
     .value = cbor_move(precip_array)
   });
   
-  // Add soil_moisture array
-  cbor_item_t *soil_array = cbor_new_definite_array(SAMPLE_SIZE);
-  for (int i = 0; i < SAMPLE_SIZE; i++) {
-    cbor_array_push(soil_array, cbor_move(cbor_build_float4(sensor_data.soil_moisture[i])));
+  // Add soil_moisture array - Full size
+  cbor_item_t *soil_array = cbor_new_definite_array(ARRAY_SIZE);
+  for (int i = 0; i < ARRAY_SIZE; i++) {
+    (void)cbor_array_push(soil_array, cbor_move(cbor_build_float4(sensor_data.soil_moisture[i])));
   }
-  cbor_map_add(root, (struct cbor_pair) {
+  (void)cbor_map_add(root, (struct cbor_pair) {
     .key = cbor_move(cbor_build_string("soil_moisture")),
     .value = cbor_move(soil_array)
   });
   
-  // Add wind array
-  cbor_item_t *wind_array = cbor_new_definite_array(SAMPLE_SIZE);
-  for (int i = 0; i < SAMPLE_SIZE; i++) {
-    cbor_array_push(wind_array, cbor_move(cbor_build_float4(sensor_data.wind[i])));
+  // Add wind array - Full size
+  cbor_item_t *wind_array = cbor_new_definite_array(ARRAY_SIZE);
+  for (int i = 0; i < ARRAY_SIZE; i++) {
+    (void)cbor_array_push(wind_array, cbor_move(cbor_build_float4(sensor_data.wind[i])));
   }
-  cbor_map_add(root, (struct cbor_pair) {
+  (void)cbor_map_add(root, (struct cbor_pair) {
     .key = cbor_move(cbor_build_string("wind")),
     .value = cbor_move(wind_array)
   });
@@ -483,29 +478,48 @@ size_t serializeCBOR(char* buffer, size_t buffer_size) {
 }
 
 size_t serializeProtobuf(char* buffer, size_t buffer_size) {
-  // Simulate Protobuf with JSON structure + identifier
-  JsonDocument doc;
+  Sensor__SensorData pb_msg = SENSOR__SENSOR_DATA__INIT;
   
-  doc["device_id"] = sensor_data.device_id;
-  doc["sequence_number"] = sensor_data.sequence_number;
-  doc["pressure"] = sensor_data.pressure;
-  doc["timestamp"] = (double)sensor_data.timestamp;
-  doc["protocol"] = "PROTOBUF_SIM";
-  doc["light_level"] = sensor_data.light_level;
-  doc["raining"] = sensor_data.raining;
-  doc["battery_level"] = sensor_data.battery_level;
+  // Allocate arrays for sensor data - Full size
+  float temp_array[ARRAY_SIZE];
+  float precip_array[ARRAY_SIZE];
+  float soil_array[ARRAY_SIZE];
+  float wind_array[ARRAY_SIZE];
   
-  // Add sample arrays (smaller for protobuf simulation)
-  JsonArray multi_sample = doc["multi_sample"].to<JsonArray>();
-  for (int i = 0; i < 6; i++) {
-    // Fixed: Use add<JsonObject>() instead of createNestedObject()
-    JsonObject sample_obj = multi_sample.add<JsonObject>();
-    sample_obj["temp"] = sensor_data.temperature[i];
-    sample_obj["precip"] = sensor_data.precipitation[i];
-    sample_obj["soil"] = sensor_data.soil_moisture[i];
+  // Copy data to arrays
+  for (int i = 0; i < ARRAY_SIZE; i++) {
+    temp_array[i] = sensor_data.temperature[i];
+    precip_array[i] = sensor_data.precipitation[i];
+    soil_array[i] = sensor_data.soil_moisture[i];
+    wind_array[i] = sensor_data.wind[i];
   }
   
-  return serializeJson(doc, buffer, buffer_size);
+  // Set array fields
+  pb_msg.n_temperature = ARRAY_SIZE;
+  pb_msg.temperature = temp_array;
+  
+  pb_msg.n_precipitation = ARRAY_SIZE;
+  pb_msg.precipitation = precip_array;
+  
+  pb_msg.n_soil_moisture = ARRAY_SIZE;
+  pb_msg.soil_moisture = soil_array;
+  
+  pb_msg.n_wind = ARRAY_SIZE;
+  pb_msg.wind = wind_array;
+  
+  // Set scalar fields
+  pb_msg.pressure = sensor_data.pressure;
+  pb_msg.light_level = sensor_data.light_level;
+  pb_msg.raining = sensor_data.raining;
+  pb_msg.timestamp = sensor_data.timestamp;
+  pb_msg.device_id = sensor_data.device_id;
+  pb_msg.battery_level = sensor_data.battery_level;
+  pb_msg.sequence_number = sensor_data.sequence_number;
+  
+  // Pack the message
+  size_t packed_size = sensor__sensor_data__pack(&pb_msg, (uint8_t*)buffer);
+  
+  return packed_size;
 }
 
 void updateDisplay() {
