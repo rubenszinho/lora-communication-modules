@@ -340,24 +340,36 @@ size_t serializeJSON(char* buffer, size_t buffer_size) {
 }
 
 size_t serializeMessagePack(char* buffer, size_t buffer_size) {
-  // Simulate MessagePack with JSON structure + identifier
   JsonDocument doc;
   
-  doc["device_id"] = sensor_data.device_id;
-  doc["sequence_number"] = sensor_data.sequence_number;
-  doc["pressure"] = sensor_data.pressure;
-  doc["light_level"] = sensor_data.light_level;
-  doc["timestamp"] = (double)sensor_data.timestamp;
-  doc["protocol"] = "MESSAGEPACK_SIM";
-  doc["raining"] = sensor_data.raining;
+  // Create arrays for vectors - Sample first 10 elements to keep size manageable
+  JsonArray temp_array = doc["temperature"].to<JsonArray>();
+  JsonArray precip_array = doc["precipitation"].to<JsonArray>();
+  JsonArray soil_array = doc["soil_moisture"].to<JsonArray>();
+  JsonArray wind_array = doc["wind"].to<JsonArray>();
   
-  // Add sample of first array
-  JsonArray temp_sample = doc["temp_sample"].to<JsonArray>();
-  for (int i = 0; i < 5; i++) {
-    temp_sample.add(sensor_data.temperature[i]);
+  const int SAMPLE_SIZE = 10; // Use smaller sample for LoRa transmission
+  
+  for (int i = 0; i < SAMPLE_SIZE; i++) {
+    temp_array.add(sensor_data.temperature[i]);
+    precip_array.add(sensor_data.precipitation[i]);
+    soil_array.add(sensor_data.soil_moisture[i]);
+    wind_array.add(sensor_data.wind[i]);
   }
   
-  return serializeJson(doc, buffer, buffer_size);
+  // Add scalar fields
+  doc["pressure"] = sensor_data.pressure;
+  doc["light_level"] = sensor_data.light_level;
+  doc["raining"] = sensor_data.raining;
+  doc["timestamp"] = (double)sensor_data.timestamp;
+  doc["device_id"] = sensor_data.device_id;
+  doc["battery_level"] = sensor_data.battery_level;
+  doc["sequence_number"] = sensor_data.sequence_number;
+  doc["protocol"] = "MESSAGEPACK";
+  doc["array_sample_size"] = SAMPLE_SIZE;
+  
+  // Serialize to MessagePack format
+  return serializeMsgPack(doc, buffer, buffer_size);
 }
 
 size_t serializeCBOR(char* buffer, size_t buffer_size) {
