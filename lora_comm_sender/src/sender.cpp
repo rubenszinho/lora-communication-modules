@@ -228,21 +228,27 @@ void checkProtocolSwitch() {
 }
 
 void readSensorData() {
-  // Fill arrays with predictable values for testing
+  // Fill arrays with realistic values with many decimals for testing
   for (int i = 0; i < ARRAY_SIZE; i++) {
-    float value = i * 0.25f;
-    sensor_data.temperature[i] = value;
-    sensor_data.precipitation[i] = value;
-    sensor_data.soil_moisture[i] = value;
-    sensor_data.wind[i] = value;
+    // Temperature: realistic range with high precision decimals
+    sensor_data.temperature[i] = 15.3456789 + (i * 0.123456);
+    
+    // Precipitation: realistic rainfall values
+    sensor_data.precipitation[i] = 123.456789 + (i * 2.345678);
+    
+    // Soil moisture: realistic percentage values
+    sensor_data.soil_moisture[i] = 456.789123 + (i * 1.234567);
+    
+    // Wind speed: realistic wind measurements
+    sensor_data.wind[i] = 12.345678 + (i * 0.456789);
   }
   
-  // Fill scalar fields
-  sensor_data.pressure = 1013.25f;
-  sensor_data.light_level = 512;
+  // Fill scalar fields with realistic values
+  sensor_data.pressure = 1013.25634f;
+  sensor_data.light_level = 51234;
   sensor_data.raining = false;
   sensor_data.timestamp = millis();
-  sensor_data.battery_level = 100;
+  sensor_data.battery_level = 87;
   sensor_data.sequence_number = ++sequence_number;
 }
 
@@ -255,7 +261,7 @@ void sendLoRaData() {
   readSensorData();
   
   // Allocate buffer for serialized data
-  const size_t BUFFER_SIZE = 2 * 8192; // 16KB buffer
+  const size_t BUFFER_SIZE = 4 * 8192; // 16KB buffer
   char* buffer = (char*)malloc(BUFFER_SIZE);
   if (!buffer) {
     Serial.println("Failed to allocate buffer");
