@@ -12,6 +12,9 @@
 #include <cbor.h>
 #include "sensor_data.pb-c.h"
 
+//ESP-IDF Timer for microsecond precision
+#include <esp_timer.h>
+
 //define the pins used by the LoRa transceiver module
 #define SCK 5
 #define MISO 19
@@ -33,17 +36,30 @@
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
 
 // Protocol timing configuration (in seconds)
-#define JSON_DURATION_SEC 10        // 1 minute
-#define MESSAGEPACK_DURATION_SEC 10 // 2 minutes  
-#define CBOR_DURATION_SEC 10       // 3 minutes
-#define PROTOBUF_DURATION_SEC 240   // 4 minutes
+#define JSON_DURATION_SEC 4 * 60        // 1 minute
+#define MESSAGEPACK_DURATION_SEC 180 // 2 minutes  
+#define CBOR_DURATION_SEC 120       // 3 minutes
+#define PROTOBUF_DURATION_SEC 60   // 4 minutes
 
 // Send interval
 #define SEND_INTERVAL_MS 5000       // 5 seconds between packets
 
+// LoRa fragmentation settings
+#define LORA_MAX_PAYLOAD 255        // Maximum LoRa payload size
+#define LORA_HEADER_SIZE 8          // Header size: seq(4) + frag_num(2) + total_frags(2)
+#define LORA_MAX_DATA_PER_FRAGMENT (LORA_MAX_PAYLOAD - LORA_HEADER_SIZE)  // 247 bytes
+#define INTER_FRAGMENT_DELAY_MS 50  // Delay between fragments
+
 // Array size for sensor data
 #define ARRAY_SIZE 250
 #define DEVICE_ID "ESP32_LORA_PROTOCOLS_001"
+
+// Header structure for fragmented messages
+struct LoRaHeader {
+  uint32_t sequence_number;   // 4 bytes - Unique message ID
+  uint16_t fragment_number;   // 2 bytes - Current fragment (0-based)
+  uint16_t total_fragments;   // 2 bytes - Total number of fragments
+} __attribute__((packed));
 
 // Protocol enumeration
 enum ProtocolType {
@@ -54,10 +70,13 @@ enum ProtocolType {
 };
 
 // Current protocol state
-ProtocolType current_protocol = PROTOCOL_JSON;
+ProtocolType current_protocol = PROTOCOL_PROTOBUF;  // Start with fastest (1 min)
 unsigned long protocol_start_time = 0;
 int packet_counter = 0;
 uint32_t sequence_number = 0;
+bool all_protocols_completed = false;  // Flag para indicar conclusão de todos os protocolos
+bool initial_delay_done = false;        // Flag para delay inicial
+unsigned long last_transmission_time_ms = 0;  // Tempo da última transmissão completa
 
 // Protocol names for display
 const char* protocol_names[] = {"JSON", "MSGPACK", "CBOR", "PROTOBUF"};
@@ -147,17 +166,40 @@ void setup() {
   display.print("LoRa OK!");
   display.display();
   
+  // Delay inicial de 10-15 segundos antes de começar
+  Serial.println("\n=== DELAY INICIAL ===");
+  Serial.println("Aguardando 12 segundos antes de iniciar transmissão...");
+  display.clearDisplay();
+  display.setCursor(0,0);
+  display.print("DELAY INICIAL");
+  
+  for(int i = 12; i > 0; i--) {
+    Serial.printf("Iniciando em: %d segundos\n", i);
+    display.setCursor(0,20);
+    display.printf("Start in: %ds", i);
+    display.display();
+    delay(1000);
+    if (i <= 10) {
+      display.clearDisplay();
+      display.setCursor(0,0);
+      display.print("DELAY INICIAL");
+    }
+  }
+  
+  initial_delay_done = true;
+  Serial.println("Delay inicial concluído!\n");
+  
   // Initialize protocol timing
   protocol_start_time = millis() / 1000; // Convert to seconds
   
   // Initialize sensor data structure
   strcpy(sensor_data.device_id, DEVICE_ID);
   
-  Serial.println("Protocol rotation schedule:");
-  Serial.printf("  - JSON: %d seconds\n", JSON_DURATION_SEC);
-  Serial.printf("  - MessagePack: %d seconds\n", MESSAGEPACK_DURATION_SEC);  
-  Serial.printf("  - CBOR: %d seconds\n", CBOR_DURATION_SEC);
-  Serial.printf("  - Protobuf: %d seconds\n", PROTOBUF_DURATION_SEC);
+  Serial.println("Protocol rotation schedule (shortest to longest):");
+  Serial.printf("  1. Protobuf: %d seconds (1 min)\n", PROTOBUF_DURATION_SEC);
+  Serial.printf("  2. CBOR: %d seconds (2 min)\n", CBOR_DURATION_SEC);
+  Serial.printf("  3. MessagePack: %d seconds (3 min)\n", MESSAGEPACK_DURATION_SEC);  
+  Serial.printf("  4. JSON: %d seconds (4 min)\n", JSON_DURATION_SEC);
   Serial.printf("Starting with protocol: %s\n", protocol_names[current_protocol]);
   
   delay(2000);
@@ -167,6 +209,38 @@ void setup() {
 void loop() {
   static unsigned long lastSend = 0;
   unsigned long currentTime = millis();
+  
+  // Verificar se todos os protocolos foram concluídos
+  if (all_protocols_completed) {
+    // Mostrar mensagem final no display
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.setTextSize(1);
+    display.print("ALL PROTOCOLS");
+    display.setCursor(0,15);
+    display.print("COMPLETED!");
+    display.setCursor(0,35);
+    display.print("Entering");
+    display.setCursor(0,45);
+    display.print("Deep Sleep...");
+    display.display();
+    
+    delay(3000); // Aguardar 3 segundos para mostrar a mensagem
+    
+    Serial.println("\n========================================");
+    Serial.println("Entrando em Deep Sleep...");
+    Serial.println("Para reiniciar, pressione o botão RESET");
+    Serial.println("========================================\n");
+    Serial.flush(); // Garantir que todas as mensagens foram enviadas
+    
+    delay(500);
+    
+    // Entrar em Deep Sleep (dormir indefinidamente até reset manual)
+    esp_deep_sleep_start();
+    
+    // Código abaixo nunca será executado
+    return;
+  }
   
   // Check if we need to switch protocols
   checkProtocolSwitch();
@@ -191,15 +265,8 @@ void checkProtocolSwitch() {
   ProtocolType next_protocol = current_protocol;
   
   switch (current_protocol) {
-    case PROTOCOL_JSON:
-      if (elapsed_time >= JSON_DURATION_SEC) {
-        next_protocol = PROTOCOL_MESSAGEPACK;
-        should_switch = true;
-      }
-      break;
-      
-    case PROTOCOL_MESSAGEPACK:
-      if (elapsed_time >= MESSAGEPACK_DURATION_SEC) {
+    case PROTOCOL_PROTOBUF:
+      if (elapsed_time >= PROTOBUF_DURATION_SEC) {
         next_protocol = PROTOCOL_CBOR;
         should_switch = true;
       }
@@ -207,47 +274,95 @@ void checkProtocolSwitch() {
       
     case PROTOCOL_CBOR:
       if (elapsed_time >= CBOR_DURATION_SEC) {
-        next_protocol = PROTOCOL_PROTOBUF;
+        next_protocol = PROTOCOL_MESSAGEPACK;
         should_switch = true;
       }
       break;
       
-    case PROTOCOL_PROTOBUF:
-      if (elapsed_time >= PROTOBUF_DURATION_SEC) {
-        next_protocol = PROTOCOL_JSON; // Loop back to beginning
+    case PROTOCOL_MESSAGEPACK:
+      if (elapsed_time >= MESSAGEPACK_DURATION_SEC) {
+        next_protocol = PROTOCOL_JSON;
         should_switch = true;
+      }
+      break;
+      
+    case PROTOCOL_JSON:
+      if (elapsed_time >= JSON_DURATION_SEC) {
+        // Todos os protocolos foram concluídos
+        all_protocols_completed = true;
+        Serial.println("\n========================================");
+        Serial.println("✅ TODOS OS PROTOCOLOS CONCLUÍDOS!");
+        Serial.println("========================================");
+        Serial.println("Preparando para entrar em Deep Sleep...");
+        should_switch = false; // Não trocar mais
       }
       break;
   }
   
   if (should_switch) {
+    Serial.println("\n========================================");
+    Serial.printf("🔄 PROTOCOL SWITCH: %s → %s\n", 
+                  protocol_names[current_protocol], 
+                  protocol_names[next_protocol]);
+    Serial.println("========================================");
+    Serial.println("⏱️  Aguardando 10 segundos antes de mudar...");
+    
+    // Mostrar contagem regressiva no display
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.printf("SWITCHING TO");
+    display.setCursor(0, 15);
+    display.printf("%s", protocol_names[next_protocol]);
+    
+    for (int i = 10; i > 0; i--) {
+      Serial.printf("   Mudando em: %d segundos\n", i);
+      display.fillRect(0, 30, 128, 34, BLACK);
+      display.setCursor(0, 35);
+      display.printf("Wait: %ds", i);
+      display.display();
+      delay(1000);
+    }
+    
     current_protocol = next_protocol;
-    protocol_start_time = current_time_sec;
-    Serial.printf("Switching to protocol: %s\n", protocol_names[current_protocol]);
+    protocol_start_time = current_time_sec + 10; // Ajustar pelo delay de 10s
+    
+    Serial.println("✅ Mudança de protocolo concluída!\n");
+    display.clearDisplay();
   }
 }
 
 void readSensorData() {
-  // Fill arrays with realistic values with many decimals for testing
+  static float wind = 5.0;
+  static float delta = 0.05;
+  static float temperature = 20.0;
+
+  // Fill arrays with realistic values
   for (int i = 0; i < ARRAY_SIZE; i++) {
-    // Temperature: realistic range with high precision decimals
-    sensor_data.temperature[i] = 15.3456789 + (i * 0.123456);
-    
-    // Precipitation: realistic rainfall values
-    sensor_data.precipitation[i] = 123.456789 + (i * 2.345678);
-    
-    // Soil moisture: realistic percentage values
-    sensor_data.soil_moisture[i] = 456.789123 + (i * 1.234567);
-    
-    // Wind speed: realistic wind measurements
-    sensor_data.wind[i] = 12.345678 + (i * 0.456789);
+
+    // Wind speed: controla o delta
+    wind += delta;
+    if (wind > 8.0 || wind < 2.0) {
+        delta = -delta;  // inverte o delta com base no vento
+    }
+    sensor_data.wind[i] = wind;
+
+    // Temperature: varia suavemente junto com o mesmo delta
+    temperature += delta;
+    sensor_data.temperature[i] = temperature;
+
+    // Precipitação: acumula linearmente (chuva leve/moderada)
+    sensor_data.precipitation[i] = i * 0.2f;  // 0 a ~50 mm
+
+    // Umidade do solo: aumenta suavemente (10–45%)
+    sensor_data.soil_moisture[i] = 10.0f + (i * 0.14f);
   }
-  
+
   // Fill scalar fields with realistic values
-  sensor_data.pressure = 1013.25634f;
-  sensor_data.light_level = 51234;
+  sensor_data.pressure = 1013.0;
+  sensor_data.light_level = 40000;
   sensor_data.raining = false;
-  sensor_data.timestamp = millis();
+  sensor_data.timestamp = esp_timer_get_time(); // Microseconds since boot
   sensor_data.battery_level = 87;
   sensor_data.sequence_number = ++sequence_number;
 }
@@ -261,10 +376,10 @@ void sendLoRaData() {
   readSensorData();
   
   // Allocate buffer for serialized data
-  const size_t BUFFER_SIZE = 4 * 8192; // 16KB buffer
+  const size_t BUFFER_SIZE = 4 * 8192; // 32KB buffer
   char* buffer = (char*)malloc(BUFFER_SIZE);
   if (!buffer) {
-    Serial.println("Failed to allocate buffer");
+    Serial.println("❌ Failed to allocate buffer");
     return;
   }
   
@@ -292,23 +407,61 @@ void sendLoRaData() {
   current_metrics.message_size_bytes = serialized_size;
   current_metrics.heap_after_kb = ESP.getFreeHeap() / 1024;
   
-  // Send via LoRa if serialization was successful
+  // Send via LoRa with fragmentation if serialization was successful
   if (serialized_size > 0) {
-    Serial.printf("[%s] Sending LoRa packet: %d\n", 
-                  protocol_names[current_protocol], packet_counter);
+    // Calculate number of fragments needed
+    uint16_t total_fragments = (serialized_size + LORA_MAX_DATA_PER_FRAGMENT - 1) / LORA_MAX_DATA_PER_FRAGMENT;
     
-    LoRa.beginPacket();
-    LoRa.write((uint8_t*)buffer, serialized_size);
-    LoRa.endPacket();
+    Serial.printf("\n[%s] Packet #%d - Total size: %d bytes\n", 
+                  protocol_names[current_protocol], packet_counter, serialized_size);
+    Serial.printf("📦 Fragments needed: %d (max %d bytes/fragment)\n", 
+                  total_fragments, LORA_MAX_DATA_PER_FRAGMENT);
     
-    Serial.printf("[%s] Packet sent - Size: %d bytes, Time: %lu μs\n",
-                  protocol_names[current_protocol], 
-                  serialized_size, 
-                  current_metrics.serialization_time_us);
+    // Start transmission timer
+    unsigned long transmission_start = millis();
+    
+    // Send each fragment
+    for (uint16_t frag_num = 0; frag_num < total_fragments; frag_num++) {
+      // Prepare header
+      LoRaHeader header;
+      header.sequence_number = sequence_number;
+      header.fragment_number = frag_num;
+      header.total_fragments = total_fragments;
+      
+      // Calculate data size for this fragment
+      size_t offset = frag_num * LORA_MAX_DATA_PER_FRAGMENT;
+      size_t remaining = serialized_size - offset;
+      size_t fragment_data_size = (remaining < LORA_MAX_DATA_PER_FRAGMENT) ? remaining : LORA_MAX_DATA_PER_FRAGMENT;
+      
+      // Send fragment
+      LoRa.beginPacket();
+      LoRa.write((uint8_t*)&header, sizeof(LoRaHeader));
+      LoRa.write((uint8_t*)(buffer + offset), fragment_data_size);
+      LoRa.endPacket();
+      
+      Serial.printf("  📡 Fragment %d/%d sent (%d bytes)\n", 
+                    frag_num + 1, total_fragments, fragment_data_size + LORA_HEADER_SIZE);
+      
+      // Delay between fragments (except last one)
+      if (frag_num < total_fragments - 1) {
+        delay(INTER_FRAGMENT_DELAY_MS);
+      }
+    }
+    
+    // Calculate total transmission time
+    unsigned long transmission_end = millis();
+    last_transmission_time_ms = transmission_end - transmission_start;
+    
+    Serial.printf("✅ Transmission complete! Time: %lu ms\n", last_transmission_time_ms);
+    Serial.printf("   Serialization: %lu μs | Payload: %d bytes | Fragments: %d\n\n",
+                  current_metrics.serialization_time_us, 
+                  serialized_size,
+                  total_fragments);
     
     packet_counter++;
   } else {
-    Serial.printf("[%s] Failed to serialize data\n", protocol_names[current_protocol]);
+    Serial.printf("❌ [%s] Failed to serialize data\n", protocol_names[current_protocol]);
+    last_transmission_time_ms = 0;
   }
   
   free(buffer);
@@ -537,20 +690,30 @@ void updateDisplay() {
   display.printf("LORA PROTOCOLS");
   
   display.setCursor(0,10);
-  display.printf("Current: %s", protocol_names[current_protocol]);
+  display.printf("Proto: %s", protocol_names[current_protocol]);
   
   display.setCursor(0,20);
   unsigned long elapsed = (millis() / 1000) - protocol_start_time;
-  display.printf("Time: %lu sec", elapsed);
+  display.printf("Time: %lu s", elapsed);
   
   display.setCursor(0,30);
-  display.printf("Packets: %d", packet_counter);
+  display.printf("Pkts: %d", packet_counter);
   
   display.setCursor(0,40);
-  display.printf("Size: %u bytes", current_metrics.message_size_bytes);
+  // Calcular número de fragmentos
+  uint16_t fragments = 0;
+  if (current_metrics.message_size_bytes > 0) {
+    fragments = (current_metrics.message_size_bytes + LORA_MAX_DATA_PER_FRAGMENT - 1) / LORA_MAX_DATA_PER_FRAGMENT;
+  }
+  display.printf("Frags: %u", fragments);
   
   display.setCursor(0,50);
-  display.printf("Heap: %u KB", ESP.getFreeHeap() / 1024);
+  // Mostrar tempo de transmissão da última mensagem completa
+  if (last_transmission_time_ms > 0) {
+    display.printf("TX: %lu ms", last_transmission_time_ms);
+  } else {
+    display.printf("TX: -- ms");
+  }
   
   display.display();
 }
