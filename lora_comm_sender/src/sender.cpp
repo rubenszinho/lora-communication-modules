@@ -35,14 +35,10 @@
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
 
-// Protocol timing configuration (in seconds)
-#define JSON_DURATION_SEC 4 * 60        // 1 minute
-#define MESSAGEPACK_DURATION_SEC 180 // 2 minutes  
-#define CBOR_DURATION_SEC 120       // 3 minutes
-#define PROTOBUF_DURATION_SEC 60   // 4 minutes
-
-// Send interval
-#define SEND_INTERVAL_MS 5000       // 5 seconds between packets
+// Protocol configuration
+#define PAYLOADS_PER_PROTOCOL 10    // Number of payloads to send per protocol
+#define SEND_INTERVAL_MS 500        // 500 milliseconds between packets
+#define PROTOCOL_SWITCH_DELAY_MS 10000  // 10 seconds delay between protocol switches
 
 // LoRa fragmentation settings
 #define LORA_MAX_PAYLOAD 255        // Maximum LoRa payload size
@@ -70,13 +66,13 @@ enum ProtocolType {
 };
 
 // Current protocol state
-ProtocolType current_protocol = PROTOCOL_PROTOBUF;  // Start with fastest (1 min)
-unsigned long protocol_start_time = 0;
-int packet_counter = 0;
+ProtocolType current_protocol = PROTOCOL_PROTOBUF;  // Start with fastest protocol
+int payloads_sent_current_protocol = 0;  // Counter for current protocol
+int total_payloads_sent = 0;  // Total counter across all protocols
 uint32_t sequence_number = 0;
-bool all_protocols_completed = false;  // Flag para indicar conclusão de todos os protocolos
-bool initial_delay_done = false;        // Flag para delay inicial
-unsigned long last_transmission_time_ms = 0;  // Tempo da última transmissão completa
+bool all_protocols_completed = false;  // Flag to indicate all protocols completed
+bool switching_protocol = false;  // Flag for protocol switch delay
+unsigned long protocol_switch_start = 0;  // Time when protocol switch started
 
 // Protocol names for display
 const char* protocol_names[] = {"JSON", "MSGPACK", "CBOR", "PROTOBUF"};
@@ -186,21 +182,27 @@ void setup() {
     }
   }
   
-  initial_delay_done = true;
+  Serial.println("Aguardando 5 segundos antes de iniciar transmissão...");
+  delay(5000);
   Serial.println("Delay inicial concluído!\n");
-  
-  // Initialize protocol timing
-  protocol_start_time = millis() / 1000; // Convert to seconds
   
   // Initialize sensor data structure
   strcpy(sensor_data.device_id, DEVICE_ID);
   
-  Serial.println("Protocol rotation schedule (shortest to longest):");
-  Serial.printf("  1. Protobuf: %d seconds (1 min)\n", PROTOBUF_DURATION_SEC);
-  Serial.printf("  2. CBOR: %d seconds (2 min)\n", CBOR_DURATION_SEC);
-  Serial.printf("  3. MessagePack: %d seconds (3 min)\n", MESSAGEPACK_DURATION_SEC);  
-  Serial.printf("  4. JSON: %d seconds (4 min)\n", JSON_DURATION_SEC);
+  Serial.println("========================================");
+  Serial.println("Protocol Test Configuration:");
+  Serial.printf("  Payloads per protocol: %d\n", PAYLOADS_PER_PROTOCOL);
+  Serial.printf("  Interval between packets: %d ms\n", SEND_INTERVAL_MS);
+  Serial.printf("  Delay between protocols: %d ms\n", PROTOCOL_SWITCH_DELAY_MS);
+  Serial.println("========================================");
+  Serial.println("Protocol sequence (fastest to slowest):");
+  Serial.println("  1. Protobuf");
+  Serial.println("  2. CBOR");
+  Serial.println("  3. MessagePack");
+  Serial.println("  4. JSON");
+  Serial.println("========================================");
   Serial.printf("Starting with protocol: %s\n", protocol_names[current_protocol]);
+  Serial.println("========================================\n");
   
   delay(2000);
   display.clearDisplay();
@@ -245,6 +247,13 @@ void loop() {
   // Check if we need to switch protocols
   checkProtocolSwitch();
   
+  // Don't send data if we're switching protocols
+  if (switching_protocol) {
+    updateDisplay();
+    delay(100);
+    return;
+  }
+  
   // Send data every SEND_INTERVAL_MS
   if (currentTime - lastSend >= SEND_INTERVAL_MS) {
     sendLoRaData();
@@ -258,77 +267,77 @@ void loop() {
 }
 
 void checkProtocolSwitch() {
-  unsigned long current_time_sec = millis() / 1000;
-  unsigned long elapsed_time = current_time_sec - protocol_start_time;
-  
-  bool should_switch = false;
-  ProtocolType next_protocol = current_protocol;
-  
-  switch (current_protocol) {
-    case PROTOCOL_PROTOBUF:
-      if (elapsed_time >= PROTOBUF_DURATION_SEC) {
+  // Check if current protocol has sent enough payloads
+  if (payloads_sent_current_protocol >= PAYLOADS_PER_PROTOCOL) {
+    ProtocolType next_protocol;
+    bool has_next = true;
+    
+    switch (current_protocol) {
+      case PROTOCOL_PROTOBUF:
         next_protocol = PROTOCOL_CBOR;
-        should_switch = true;
-      }
-      break;
-      
-    case PROTOCOL_CBOR:
-      if (elapsed_time >= CBOR_DURATION_SEC) {
+        break;
+        
+      case PROTOCOL_CBOR:
         next_protocol = PROTOCOL_MESSAGEPACK;
-        should_switch = true;
-      }
-      break;
-      
-    case PROTOCOL_MESSAGEPACK:
-      if (elapsed_time >= MESSAGEPACK_DURATION_SEC) {
+        break;
+        
+      case PROTOCOL_MESSAGEPACK:
         next_protocol = PROTOCOL_JSON;
-        should_switch = true;
-      }
-      break;
-      
-    case PROTOCOL_JSON:
-      if (elapsed_time >= JSON_DURATION_SEC) {
-        // Todos os protocolos foram concluídos
+        break;
+        
+      case PROTOCOL_JSON:
+        // All protocols completed
         all_protocols_completed = true;
+        has_next = false;
         Serial.println("\n========================================");
-        Serial.println("✅ TODOS OS PROTOCOLOS CONCLUÍDOS!");
+        Serial.println("✅ ALL PROTOCOLS COMPLETED!");
         Serial.println("========================================");
-        Serial.println("Preparando para entrar em Deep Sleep...");
-        should_switch = false; // Não trocar mais
-      }
-      break;
-  }
-  
-  if (should_switch) {
-    Serial.println("\n========================================");
-    Serial.printf("🔄 PROTOCOL SWITCH: %s → %s\n", 
-                  protocol_names[current_protocol], 
-                  protocol_names[next_protocol]);
-    Serial.println("========================================");
-    Serial.println("⏱️  Aguardando 10 segundos antes de mudar...");
-    
-    // Mostrar contagem regressiva no display
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setCursor(0, 0);
-    display.printf("SWITCHING TO");
-    display.setCursor(0, 15);
-    display.printf("%s", protocol_names[next_protocol]);
-    
-    for (int i = 10; i > 0; i--) {
-      Serial.printf("   Mudando em: %d segundos\n", i);
-      display.fillRect(0, 30, 128, 34, BLACK);
-      display.setCursor(0, 35);
-      display.printf("Wait: %ds", i);
-      display.display();
-      delay(1000);
+        Serial.printf("Total payloads sent: %d\n", total_payloads_sent);
+        Serial.println("Preparing for Deep Sleep...");
+        Serial.println("========================================\n");
+        break;
     }
     
-    current_protocol = next_protocol;
-    protocol_start_time = current_time_sec + 10; // Ajustar pelo delay de 10s
+    if (has_next && !switching_protocol) {
+      // Start protocol switch delay
+      switching_protocol = true;
+      protocol_switch_start = millis();
+      
+      Serial.println("\n========================================");
+      Serial.printf("🔄 PROTOCOL SWITCH: %s → %s\n", 
+                    protocol_names[current_protocol], 
+                    protocol_names[next_protocol]);
+      Serial.println("========================================");
+      Serial.printf("Payloads sent with %s: %d\n", 
+                    protocol_names[current_protocol], 
+                    payloads_sent_current_protocol);
+      Serial.printf("⏱️  Waiting %d seconds before switching...\n", 
+                    PROTOCOL_SWITCH_DELAY_MS / 1000);
+      Serial.println("========================================\n");
+      
+      // Update display during switch
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setCursor(0,0);
+      display.print("SWITCHING...");
+      display.setCursor(0,15);
+      display.printf("%s ->", protocol_names[current_protocol]);
+      display.setCursor(0,25);
+      display.printf("%s", protocol_names[next_protocol]);
+      display.setCursor(0,45);
+      display.printf("Wait %ds", PROTOCOL_SWITCH_DELAY_MS / 1000);
+      display.display();
+    }
     
-    Serial.println("✅ Mudança de protocolo concluída!\n");
-    display.clearDisplay();
+    // Check if switch delay has elapsed
+    if (switching_protocol && (millis() - protocol_switch_start >= PROTOCOL_SWITCH_DELAY_MS)) {
+      current_protocol = next_protocol;
+      payloads_sent_current_protocol = 0;
+      switching_protocol = false;
+      
+      Serial.printf("✅ Switched to %s\n\n", protocol_names[current_protocol]);
+      display.clearDisplay();
+    }
   }
 }
 
@@ -412,8 +421,11 @@ void sendLoRaData() {
     // Calculate number of fragments needed
     uint16_t total_fragments = (serialized_size + LORA_MAX_DATA_PER_FRAGMENT - 1) / LORA_MAX_DATA_PER_FRAGMENT;
     
-    Serial.printf("\n[%s] Packet #%d - Total size: %d bytes\n", 
-                  protocol_names[current_protocol], packet_counter, serialized_size);
+    Serial.printf("\n[%s] Payload #%d/%d - Total size: %d bytes\n", 
+                  protocol_names[current_protocol], 
+                  payloads_sent_current_protocol + 1,
+                  PAYLOADS_PER_PROTOCOL,
+                  serialized_size);
     Serial.printf("📦 Fragments needed: %d (max %d bytes/fragment)\n", 
                   total_fragments, LORA_MAX_DATA_PER_FRAGMENT);
     
@@ -450,18 +462,19 @@ void sendLoRaData() {
     
     // Calculate total transmission time
     unsigned long transmission_end = millis();
-    last_transmission_time_ms = transmission_end - transmission_start;
+    unsigned long transmission_time_ms = transmission_end - transmission_start;
     
-    Serial.printf("✅ Transmission complete! Time: %lu ms\n", last_transmission_time_ms);
+    Serial.printf("✅ Transmission complete! Time: %lu ms\n", transmission_time_ms);
     Serial.printf("   Serialization: %lu μs | Payload: %d bytes | Fragments: %d\n\n",
                   current_metrics.serialization_time_us, 
                   serialized_size,
                   total_fragments);
     
-    packet_counter++;
+    // Increment payload counters
+    payloads_sent_current_protocol++;
+    total_payloads_sent++;
   } else {
     Serial.printf("❌ [%s] Failed to serialize data\n", protocol_names[current_protocol]);
-    last_transmission_time_ms = 0;
   }
   
   free(buffer);
@@ -693,11 +706,10 @@ void updateDisplay() {
   display.printf("Proto: %s", protocol_names[current_protocol]);
   
   display.setCursor(0,20);
-  unsigned long elapsed = (millis() / 1000) - protocol_start_time;
-  display.printf("Time: %lu s", elapsed);
+  display.printf("Payloads: %d/%d", payloads_sent_current_protocol, PAYLOADS_PER_PROTOCOL);
   
   display.setCursor(0,30);
-  display.printf("Pkts: %d", packet_counter);
+  display.printf("Total: %d", total_payloads_sent);
   
   display.setCursor(0,40);
   // Calcular número de fragmentos
@@ -708,12 +720,7 @@ void updateDisplay() {
   display.printf("Frags: %u", fragments);
   
   display.setCursor(0,50);
-  // Mostrar tempo de transmissão da última mensagem completa
-  if (last_transmission_time_ms > 0) {
-    display.printf("TX: %lu ms", last_transmission_time_ms);
-  } else {
-    display.printf("TX: -- ms");
-  }
+  display.printf("Size: %d B", current_metrics.message_size_bytes);
   
   display.display();
 }
